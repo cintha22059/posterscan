@@ -1,0 +1,2 @@
+[global]
+cert = C:\Users\CINTA\AppData\Roaming\Python\Python313\site-packages\certifi\cacert.pem
