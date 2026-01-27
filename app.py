@@ -20,7 +20,7 @@ import base64
 @st.cache_resource
 def load_cnn_model():
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_dir, "best_model_clean.h5")
+    model_path = os.path.join(current_dir, "MobileNetV3Large_scenario2.h5")
 
     if not os.path.exists(model_path):
         st.error(f"❌ File model tidak ditemukan di: {model_path}")
