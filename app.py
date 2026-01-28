@@ -1,5 +1,5 @@
 # ============================================================
-# 🌈 PosterScan Web App – Streamlit Patch-based Detection
+# 🌈 PosterScan Web App – Patch-based AI Detection (REVISED)
 # ============================================================
 import os
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -8,14 +8,46 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import streamlit as st
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing import image
 import matplotlib.pyplot as plt
 from io import BytesIO
-import base64
+
+from tensorflow.keras import layers, models
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications import MobileNetV3Large
+from tensorflow.keras.applications.mobilenet_v3 import preprocess_input
+
 
 # ============================================================
-# ⚙️ Load Model
+# ⚙️ CONFIG
+# ============================================================
+TARGET_SIZE = (224, 224)
+GRID_SIZE   = 4
+THRESHOLD   = 0.5
+
+
+# ============================================================
+# 🧠 BUILD MODEL (same as Colab)
+# ============================================================
+def build_binary_model(backbone_ctor, img_size):
+    base_model = backbone_ctor(
+        input_shape=(img_size, img_size, 3),
+        include_top=False,
+        weights="imagenet"
+    )
+    base_model.trainable = False
+
+    model = models.Sequential([
+        base_model,
+        layers.GlobalAveragePooling2D(),
+        layers.Dropout(0.3),
+        layers.Dense(128, activation="relu"),
+        layers.Dense(1, activation="sigmoid")
+    ])
+    return model
+
+
+# ============================================================
+# ⚙️ Load Weights Safely (Keras 3 friendly)
 # ============================================================
 @st.cache_resource
 def load_cnn_model():
@@ -23,163 +55,142 @@ def load_cnn_model():
     model_path = os.path.join(current_dir, "MobileNetV3Large_scenario2.h5")
 
     if not os.path.exists(model_path):
-        st.error(f"❌ File model tidak ditemukan di: {model_path}")
+        st.error(f"❌ File weights tidak ditemukan: {model_path}")
         st.stop()
 
-    return load_model(model_path, compile=False)
+    model = build_binary_model(MobileNetV3Large, 224)
+    model.load_weights(model_path)
+
+    return model
+
+
 model = load_cnn_model()
+
+
 # ============================================================
-# 🔧 Fungsi bantu
+# 🔧 PATCHING (identik Colab)
 # ============================================================
-def split_patches(img_array, num_patches_per_side=4):
+def split_patches(img_array, num_patches_per_side):
     patches = []
     h, w, _ = img_array.shape
     patch_h = h // num_patches_per_side
     patch_w = w // num_patches_per_side
-    for i in range(num_patches_per_side):
-        for j in range(num_patches_per_side):
-            y1, y2 = i * patch_h, (i + 1) * patch_h
-            x1, x2 = j * patch_w, (j + 1) * patch_w
-            patches.append(img_array[y1:y2, x1:x2, :])
+
+    for i in range(0, h - patch_h + 1, patch_h):
+        for j in range(0, w - patch_w + 1, patch_w):
+            patch = img_array[i:i+patch_h, j:j+patch_w, :]
+            if patch.shape[:2] == (patch_h, patch_w):
+                patches.append(patch)
+
     return np.array(patches)
 
-def overlay_prediction(img_array, patches, preds, num_patches=4):
+
+# ============================================================
+# 🎯 PATCH-BASED SOFT VOTING
+# ============================================================
+def predict_patch_voting(img_array):
+    img_array = preprocess_input(img_array)
+
+    patches = split_patches(img_array, GRID_SIZE)
+
+    resized = tf.image.resize(patches, TARGET_SIZE).numpy()
+    preds = model.predict(resized, verbose=0).reshape(-1)
+
+    prob_ai = preds.mean()
+    return prob_ai, preds, patches
+
+
+# ============================================================
+# 🖼️ Overlay Visualization
+# ============================================================
+def overlay_prediction(patches, preds, num_patches):
     plt.figure(figsize=(6, 6))
     gap = 0.05
     alpha = 0.45
+
     for i in range(num_patches):
         for j in range(num_patches):
             idx = i * num_patches + j
-            val = preds[idx][0]
-            color = (1, 0, 0, alpha) if val <= 0.5 else (0, 1, 0, alpha)
+            prob_ai = preds[idx]   # ✅ FIX
+
+            if prob_ai > 0.5:
+                label = "AI"
+                color = (1, 0, 0, alpha)
+                text_color = "red"
+            else:
+                label = "Human"
+                color = (0, 1, 0, alpha)
+                text_color = "green"
+
             x_pos = j + j * gap
             y_pos = i + i * gap
+
             ax = plt.axes([
                 x_pos / (num_patches + gap * (num_patches - 1)),
                 1 - (y_pos + 1) / (num_patches + gap * (num_patches - 1)),
                 1 / (num_patches + gap * (num_patches - 1)),
                 1 / (num_patches + gap * (num_patches - 1))
             ])
+
             ax.imshow(patches[idx].astype("uint8"))
-            ax.imshow(np.ones_like(patches[idx]) * np.array(color[:3]), alpha=color[3])
+            ax.imshow(
+                np.ones_like(patches[idx]) * np.array(color[:3]),
+                alpha=color[3]
+            )
+
+            ax.text(
+                5, 20,
+                label,
+                color=text_color,
+                fontsize=12,
+                fontweight="bold",
+                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+            )
+
             ax.axis("off")
+
     buf = BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close()
     buf.seek(0)
     return buf
 
-def get_base64_from_file(image_path):
-    with open(image_path, "rb") as f:
-        data = f.read()
-    return base64.b64encode(data).decode()
+
+
 
 # ============================================================
-# 🎨 CSS Styling
+# 🎨 UI
 # ============================================================
-page_bg = """
-<style>
-body {
-    background: linear-gradient(90deg, #b7e1ec, #e7f3f8);
-}
-h1, h2, h3 {
-    color: #012f41;
-    text-align: center;
-}
-button, .stButton>button {
-    background-color: #014c65;
-    color: white;
-    border-radius: 8px;
-    font-weight: bold;
-    padding: 0.5em 1.5em;
-}
-.patch-img {
-    margin-top: 40px;   /* atur angka ini jika perlu */
-}
-.ai-box {
-    margin-top: 200px;  
-}
-<style>
-.ai-text {
-    margin-top: 40px;   
-}
-.ai-label {
-    margin-top: 10px;  
-}
-</style>
+st.title("PosterScan")
+st.caption("Deteksi Tingkat Keterlibatan AI pada Poster Digital")
 
-</style>
-"""
-st.markdown(page_bg, unsafe_allow_html=True)
+uploaded = st.file_uploader("Upload Poster Digital", type=["jpg", "jpeg", "png"])
 
-# ============================================================
-# 🏠 Halaman Awal
-# ============================================================
-st.markdown("<h1>PosterScan</h1>", unsafe_allow_html=True)
-st.markdown("<h4>Website Deteksi Tingkat Keterlibatan Artificial Intelligence dan Manusia pada Poster Digital</h4>", unsafe_allow_html=True)
+if uploaded:
+    img = image.load_img(uploaded)
+    img_array = image.img_to_array(img)
 
-if "page" not in st.session_state:
-    st.session_state.page = "home"
+    st.image(uploaded, caption="Poster Digital", width=350)
 
-if st.session_state.page == "home":
-    col1, col2, col3 = st.columns([2, 1, 2]) 
-    with col2: 
-        if st.button("MULAI"): st.session_state.page = "deteksi" 
-        st.rerun()
-# ============================================================
-# 📤 Halaman Deteksi
-# ============================================================
-elif st.session_state.page == "deteksi":
-    uploaded = st.file_uploader("Upload Poster Digital", type=["jpg", "jpeg", "png"])
-    if uploaded is not None:
-        col1, col2, col3 = st.columns([1,2,1])
+    if st.button("Deteksi Poster"):
+        with st.spinner("Menganalisis poster..."):
+            prob_ai, preds, patches = predict_patch_voting(img_array)
+            buf = overlay_prediction(patches, preds, GRID_SIZE)
+
+        st.subheader("Hasil Deteksi")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(uploaded, caption="Original")
         with col2:
-         st.image(uploaded, caption="Poster Digital", width=350)
-        colA, colB, colC = st.columns([2, 1, 2])
-        with colB:
-            detect_btn = st.button("Deteksi Poster")
+            st.image(buf, caption="Patch Prediction")
 
+        ai_percent = prob_ai * 100
+        st.markdown(f"## {ai_percent:.0f}% AI Involvement")
 
-        if detect_btn:
-            with st.spinner("Sedang menganalisis..."):
-                # proses gambar
-                img = image.load_img(uploaded)
-                img_array = image.img_to_array(img)
-                num_patches = 4
-                patches = split_patches(img_array, num_patches)
-                resized = np.array([tf.image.resize(p, (224, 224)) for p in patches]) / 255.0
-                preds = model.predict(resized)
-                ai = np.sum(preds <= 0.5)
-                human = np.sum(preds > 0.5)
-                total = len(preds)
-                ai_percent = ai / total * 100
-                human_percent = human / total * 100
-                buf = overlay_prediction(img_array, patches, preds, num_patches)
-
-            st.subheader("Results of AI Involvement Detection in Digital Posters")
-            col1, col2, col3 = st.columns([1,1,1.2])
-            with col1:
-                st.image(uploaded, caption="Original Poster", use_container_width=True)
-            with col2:
-                st.markdown("<div class='patch-img'>", unsafe_allow_html=True)
-                st.image(buf, caption="AI–Human Involvement Visualization", use_container_width=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-            with col3:
-                st.markdown(f"<h1 style='text-align:center; color:red;'>{ai_percent:.0f}%</h1>", unsafe_allow_html=True)
-
-                st.markdown("<p class='ai-text' style='text-align:center; font-size:18px;'>AI Involvement</p>", unsafe_allow_html=True)
-
-                if 45 <= ai_percent <= 55:
-                    st.markdown("<p class='ai-label'>🟡 Equally Generated by AI and Human</p>", unsafe_allow_html=True)
-                elif ai_percent > 55:
-                    st.markdown("<p class='ai-label'>🔴 Mostly Generated by AI</p>", unsafe_allow_html=True)
-                else:
-                    st.markdown("<p class='ai-label'>🟢 Mostly Generated by Human</p>", unsafe_allow_html=True)
-
-
-    if st.button("⬅️ Kembali ke Halaman Awal"):
-        st.session_state.page = "home"
-        st.rerun()
-
-
-
+        if 45 <= ai_percent <= 55:
+            st.info("🟡 Seimbang AI & Human")
+        elif ai_percent > 55:
+            st.error("🔴 Dominan AI")
+        else:
+            st.success("🟢 Dominan Human")
