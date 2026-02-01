@@ -194,7 +194,7 @@ if uploaded:
 
         with main:
             st.markdown(
-                "<h3 style='text-align:center;margin-bottom:8px;'>Hasil Deteksi</h3>",
+                "<h3 style='text-align:center;margin-bottom:8px;'>Hasil Deteksi Keterlibatan AI</h3>",
                 unsafe_allow_html=True
             )
 
@@ -204,7 +204,7 @@ if uploaded:
                 st.image(uploaded, caption="Original", use_container_width=True)
 
             with col2:
-                st.image(overlay, caption="Overlay AI–Human", use_container_width=True)
+                st.image(overlay, caption="Visualisasi Bagian AI dan Manusia", use_container_width=True)
 
             with col3:
                 st.image(draw_ai_donut(ai_percent), use_container_width=True)
