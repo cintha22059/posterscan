@@ -252,4 +252,3 @@ if uploaded:
             if st.button("Upload Poster Baru", use_container_width=True):
                 st.experimental_rerun()
 
-
