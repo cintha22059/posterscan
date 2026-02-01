@@ -28,26 +28,21 @@ THRESHOLD   = 0.5
 # ============================================================
 # 🧠 MODEL
 # ============================================================
-def build_binary_model(backbone_ctor, img_size, unfreeze_ratio=0.2):
+def build_binary_model(backbone_ctor, img_size, trainable_ratio=0.2):
     base_model = backbone_ctor(
         input_shape=(img_size, img_size, 3),
         include_top=False,
         weights="imagenet"
     )
-
-    # Freeze semua layer dulu
-    for layer in base_model.layers:
-        layer.trainable = False
-
-    # Hitung jumlah layer yang akan di-unfreeze
+    
+    # Nonaktifkan semua layer dulu
+    base_model.trainable = False
+    
+    # Aktifkan sebagian layer terakhir
     total_layers = len(base_model.layers)
-    unfreeze_from = int(total_layers * (1 - unfreeze_ratio))
-
-    # Unfreeze 20% layer terakhir
-    for layer in base_model.layers[unfreeze_from:]:
-        # optional safety: hindari BatchNorm
-        if not isinstance(layer, layers.BatchNormalization):
-            layer.trainable = True
+    num_trainable = int(total_layers * trainable_ratio)
+    for layer in base_model.layers[-num_trainable:]:
+        layer.trainable = True
 
     model = models.Sequential([
         base_model,
@@ -56,7 +51,6 @@ def build_binary_model(backbone_ctor, img_size, unfreeze_ratio=0.2):
         layers.Dense(128, activation="relu"),
         layers.Dense(1, activation="sigmoid")
     ])
-
     return model
 
 
@@ -95,57 +89,42 @@ def predict_patch_voting(img_array):
 
 
 # ============================================================
-# 🖼️ VISUALIZATION
+# 🖼️ VISUALIZATION (FULL OVERLAY ON ORIGINAL IMAGE)
 # ============================================================
-def overlay_prediction(patches, binary_preds, num_patches):
-    plt.figure(figsize=(6, 6))
+def overlay_on_full_image(original_img, binary_preds, num_patches):
+    h, w, _ = original_img.shape
+    overlay = original_img.copy().astype("float32")
 
-    gap = 0.02
-    cell = 1 / num_patches
-    size = cell - gap
+    ph, pw = h // num_patches, w // num_patches
 
+    idx = 0
     for i in range(num_patches):
         for j in range(num_patches):
-            idx = i * num_patches + j
-            is_ai = binary_preds[idx]
+            y1, y2 = i * ph, (i + 1) * ph
+            x1, x2 = j * pw, (j + 1) * pw
 
-            if is_ai:
-                label = "AI"
-                overlay_color = np.array([255, 0, 0])    # 🔴 AI
-                alpha = 0.45
-                text_color = "red"
-            else:
-                label = "Human"
-                overlay_color = np.array([0, 200, 0])    # 🟢 Human
+            if binary_preds[idx]:  # AI
+                color = np.array([255, 0, 0])  # 🔴 AI
+                alpha = 0.4
+            else:                  # Human
+                color = np.array([0, 200, 0])  # 🟢 Human
                 alpha = 0.35
-                text_color = "green"
 
-            x = j * cell + gap / 2
-            y = 1 - (i + 1) * cell + gap / 2
-            ax = plt.axes([x, y, size, size])
-
-            ax.imshow(patches[idx].astype("uint8"))
-
-            overlay = np.ones_like(patches[idx]) * overlay_color
-            ax.imshow(overlay.astype("uint8"), alpha=alpha)
-
-            ax.text(
-                6, 22,
-                label,
-                color=text_color,
-                fontsize=10,
-                fontweight="bold",
-                bbox=dict(facecolor="white", alpha=0.85, edgecolor="none")
+            overlay[y1:y2, x1:x2] = (
+                (1 - alpha) * overlay[y1:y2, x1:x2] + alpha * color
             )
+            idx += 1
 
-            ax.axis("off")
+    overlay = overlay.astype("uint8")
 
     buf = BytesIO()
+    plt.figure(figsize=(6, 6))
+    plt.imshow(overlay)
+    plt.axis("off")
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close()
     buf.seek(0)
     return buf
-
 
 
 def draw_ai_donut(ai_percent):
@@ -202,12 +181,10 @@ if uploaded:
     with btn_col:
         detect = st.button("Deteksi Poster", use_container_width=True)
 
-
-
     if detect:
         with st.spinner("Menganalisis poster..."):
             ai_ratio, binary_preds, patches = predict_patch_voting(img_array)
-            overlay = overlay_prediction(patches, binary_preds, GRID_SIZE)
+            overlay = overlay_on_full_image(img_array, binary_preds, GRID_SIZE)
 
         ai_percent = ai_ratio * 100
 
@@ -220,9 +197,6 @@ if uploaded:
                 unsafe_allow_html=True
             )
 
-
-        # ===== RESULT LAYOUT =====
-        with main:
             col1, col2, col3 = st.columns([1, 1, 0.8])
 
             with col1:
@@ -251,4 +225,3 @@ if uploaded:
         with reset_col:
             if st.button("Upload Poster Baru", use_container_width=True):
                 st.experimental_rerun()
-
