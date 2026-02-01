@@ -1,3 +1,4 @@
+# FINAL WEBSITE POSTERSCAN
 # ============================================================
 # 🌈 PosterScan Web App – Patch-based AI Detection (FINAL UI)
 # ============================================================
