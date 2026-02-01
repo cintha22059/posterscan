@@ -1,5 +1,5 @@
 # ============================================================
-# 🌈 PosterScan Web App – Patch-based AI Detection (REVISED)
+# 🌈 PosterScan Web App – Patch-based AI Detection (FINAL UI)
 # ============================================================
 import os
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
@@ -26,15 +26,28 @@ THRESHOLD   = 0.5
 
 
 # ============================================================
-# 🧠 BUILD MODEL (same as Colab)
+# 🧠 MODEL
 # ============================================================
-def build_binary_model(backbone_ctor, img_size):
+def build_binary_model(backbone_ctor, img_size, unfreeze_ratio=0.2):
     base_model = backbone_ctor(
         input_shape=(img_size, img_size, 3),
         include_top=False,
         weights="imagenet"
     )
-    base_model.trainable = False
+
+    # Freeze semua layer dulu
+    for layer in base_model.layers:
+        layer.trainable = False
+
+    # Hitung jumlah layer yang akan di-unfreeze
+    total_layers = len(base_model.layers)
+    unfreeze_from = int(total_layers * (1 - unfreeze_ratio))
+
+    # Unfreeze 20% layer terakhir
+    for layer in base_model.layers[unfreeze_from:]:
+        # optional safety: hindari BatchNorm
+        if not isinstance(layer, layers.BatchNormalization):
+            layer.trainable = True
 
     model = models.Sequential([
         base_model,
@@ -43,24 +56,14 @@ def build_binary_model(backbone_ctor, img_size):
         layers.Dense(128, activation="relu"),
         layers.Dense(1, activation="sigmoid")
     ])
+
     return model
 
 
-# ============================================================
-# ⚙️ Load Weights Safely (Keras 3 friendly)
-# ============================================================
 @st.cache_resource
 def load_cnn_model():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(current_dir, "MobileNetV3Large_scenario2.h5")
-
-    if not os.path.exists(model_path):
-        st.error(f"❌ File weights tidak ditemukan: {model_path}")
-        st.stop()
-
     model = build_binary_model(MobileNetV3Large, 224)
-    model.load_weights(model_path)
-
+    model.load_weights("MobileNetV3Large_scenario2.h5")
     return model
 
 
@@ -68,83 +71,71 @@ model = load_cnn_model()
 
 
 # ============================================================
-# 🔧 PATCHING (identik Colab)
+# 🔧 PATCH
 # ============================================================
-def split_patches(img_array, num_patches_per_side):
+def split_patches(img_array, num_patches):
     patches = []
     h, w, _ = img_array.shape
-    patch_h = h // num_patches_per_side
-    patch_w = w // num_patches_per_side
+    ph, pw = h // num_patches, w // num_patches
 
-    for i in range(0, h - patch_h + 1, patch_h):
-        for j in range(0, w - patch_w + 1, patch_w):
-            patch = img_array[i:i+patch_h, j:j+patch_w, :]
-            if patch.shape[:2] == (patch_h, patch_w):
-                patches.append(patch)
-
+    for i in range(num_patches):
+        for j in range(num_patches):
+            patches.append(img_array[i*ph:(i+1)*ph, j*pw:(j+1)*pw, :])
     return np.array(patches)
 
 
-# ============================================================
-# 🎯 PATCH-BASED SOFT VOTING
-# ============================================================
 def predict_patch_voting(img_array):
     img_array = preprocess_input(img_array)
-
     patches = split_patches(img_array, GRID_SIZE)
-
     resized = tf.image.resize(patches, TARGET_SIZE).numpy()
+
     preds = model.predict(resized, verbose=0).reshape(-1)
-
-    prob_ai = preds.mean()
-    return prob_ai, preds, patches
+    binary = (preds > THRESHOLD).astype(int)
+    return binary.mean(), binary, patches
 
 
 # ============================================================
-# 🖼️ Overlay Visualization
+# 🖼️ VISUALIZATION
 # ============================================================
-def overlay_prediction(patches, preds, num_patches):
+def overlay_prediction(patches, binary_preds, num_patches):
     plt.figure(figsize=(6, 6))
-    gap = 0.05
-    alpha = 0.45
+
+    gap = 0.02
+    cell = 1 / num_patches
+    size = cell - gap
 
     for i in range(num_patches):
         for j in range(num_patches):
             idx = i * num_patches + j
-            prob_ai = preds[idx]   # ✅ FIX
+            is_ai = binary_preds[idx]
 
-            if prob_ai > 0.5:
+            if is_ai:
                 label = "AI"
-                color = (1, 0, 0, alpha)
+                overlay_color = np.array([255, 0, 0])    # 🔴 AI
+                alpha = 0.45
                 text_color = "red"
             else:
                 label = "Human"
-                color = (0, 1, 0, alpha)
+                overlay_color = np.array([0, 200, 0])    # 🟢 Human
+                alpha = 0.35
                 text_color = "green"
 
-            x_pos = j + j * gap
-            y_pos = i + i * gap
-
-            ax = plt.axes([
-                x_pos / (num_patches + gap * (num_patches - 1)),
-                1 - (y_pos + 1) / (num_patches + gap * (num_patches - 1)),
-                1 / (num_patches + gap * (num_patches - 1)),
-                1 / (num_patches + gap * (num_patches - 1))
-            ])
+            x = j * cell + gap / 2
+            y = 1 - (i + 1) * cell + gap / 2
+            ax = plt.axes([x, y, size, size])
 
             ax.imshow(patches[idx].astype("uint8"))
-            ax.imshow(
-                np.ones_like(patches[idx]) * np.array(color[:3]),
-                alpha=color[3]
-            )
+
+            overlay = np.ones_like(patches[idx]) * overlay_color
+            ax.imshow(overlay.astype("uint8"), alpha=alpha)
 
             ax.text(
-                5, 20,
+                6, 22,
                 label,
                 color=text_color,
-                fontsize=12,
+                fontsize=10,
                 fontweight="bold",
-                bbox=dict(facecolor="white", alpha=0.7, edgecolor="none")
+                bbox=dict(facecolor="white", alpha=0.85, edgecolor="none")
             )
 
             ax.axis("off")
@@ -157,40 +148,107 @@ def overlay_prediction(patches, preds, num_patches):
 
 
 
+def draw_ai_donut(ai_percent):
+    fig, ax = plt.subplots(figsize=(4, 4))
+    ax.pie(
+        [ai_percent, 100 - ai_percent],
+        startangle=90,
+        colors=["#e74c3c", "#2ecc71"],
+        wedgeprops=dict(width=0.35)
+    )
+    ax.text(
+        0, 0,
+        f"{ai_percent:.0f}%",
+        ha="center", va="center",
+        fontsize=24, fontweight="bold"
+    )
+    ax.axis("equal")
+
+    buf = BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight", transparent=True)
+    plt.close()
+    buf.seek(0)
+    return buf
+
 
 # ============================================================
 # 🎨 UI
 # ============================================================
-st.title("PosterScan")
-st.caption("Deteksi Tingkat Keterlibatan AI pada Poster Digital")
+st.markdown(
+    """
+    <h1 style="text-align:center;">PosterScan</h1>
+    <p style="text-align:center; color:gray;">
+        Deteksi Tingkat Keterlibatan AI pada Poster Digital
+    </p>
+    """,
+    unsafe_allow_html=True
+)
 
-uploaded = st.file_uploader("Upload Poster Digital", type=["jpg", "jpeg", "png"])
+st.markdown("---")
+
+uploaded = st.file_uploader("Upload Poster Digital", type=["jpg", "png", "jpeg"])
 
 if uploaded:
     img = image.load_img(uploaded)
     img_array = image.img_to_array(img)
 
-    st.image(uploaded, caption="Poster Digital", width=350)
+    # ===== PREVIEW CENTER =====
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        st.image(uploaded, caption="Poster Digital", width=360)
 
-    if st.button("Deteksi Poster"):
+    # ===== BUTTON CENTER =====
+    _, btn_col, _ = st.columns([1, 2, 1])
+    with btn_col:
+        detect = st.button("Deteksi Poster", use_container_width=True)
+
+
+
+    if detect:
         with st.spinner("Menganalisis poster..."):
-            prob_ai, preds, patches = predict_patch_voting(img_array)
-            buf = overlay_prediction(patches, preds, GRID_SIZE)
+            ai_ratio, binary_preds, patches = predict_patch_voting(img_array)
+            overlay = overlay_prediction(patches, binary_preds, GRID_SIZE)
 
-        st.subheader("Hasil Deteksi")
+        ai_percent = ai_ratio * 100
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(uploaded, caption="Original")
-        with col2:
-            st.image(buf, caption="Patch Prediction")
+        # ===== CENTER CONTAINER =====
+        pad_l, main, pad_r = st.columns([1, 6, 1])
 
-        ai_percent = prob_ai * 100
-        st.markdown(f"## {ai_percent:.0f}% AI Involvement")
+        with main:
+            st.markdown(
+                "<h3 style='text-align:center;margin-bottom:8px;'>Hasil Deteksi</h3>",
+                unsafe_allow_html=True
+            )
 
-        if 45 <= ai_percent <= 55:
-            st.info("🟡 Seimbang AI & Human")
-        elif ai_percent > 55:
-            st.error("🔴 Dominan AI")
+
+        # ===== RESULT LAYOUT =====
+        with main:
+            col1, col2, col3 = st.columns([1, 1, 0.8])
+
+            with col1:
+                st.image(uploaded, caption="Original", use_container_width=True)
+
+            with col2:
+                st.image(overlay, caption="Overlay AI–Human", use_container_width=True)
+
+            with col3:
+                st.image(draw_ai_donut(ai_percent), use_container_width=True)
+                st.markdown(
+                    f"<p style='text-align:center;font-weight:600;'>Tingkat Keterlibatan AI : {ai_percent:.0f}%</p>",
+                    unsafe_allow_html=True
+                )
+
+        # ===== INTERPRETATION =====
+        if ai_percent > 55:
+            st.error("🔴 Dominan AI — mayoritas area terindikasi hasil generatif")
+        elif ai_percent < 45:
+            st.success("🟢 Dominan Human — ilustrasi mayoritas buatan manusia")
         else:
-            st.success("🟢 Dominan Human")
+            st.info("🟡 Seimbang — kombinasi AI dan ilustrasi manusia")
+
+        # ===== RESET BUTTON (CENTER & CONDITIONAL) =====
+        _, reset_col, _ = st.columns([1, 2, 1])
+        with reset_col:
+            if st.button("Upload Poster Baru", use_container_width=True):
+                st.experimental_rerun()
+
