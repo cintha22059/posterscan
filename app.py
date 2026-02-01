@@ -30,7 +30,7 @@ THRESHOLD   = 0.5
 # ============================================================
 @st.cache_resource
 def load_cnn_model():
-    return keras.models.load_model("MobileNetV3Large_scenario2.h5", compile=False)
+    return models.load_model("MobileNetV3Large_scenario2.h5", compile=False)
 model = load_cnn_model()
 
 
